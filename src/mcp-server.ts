@@ -36,7 +36,7 @@ import { v4 as uuid } from "uuid";
 
 const server = new McpServer({
     name: "valyrianctx",
-    version: "0.5.0",
+    version: "0.6.0",
 });
 
 // ---------------------------------------------------------------------------
@@ -92,6 +92,88 @@ async function getAutoResumePrefix(isResumeCall: boolean): Promise<string> {
         ].join("\n");
     } catch {
         return "";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Idle Timer — Auto-Save on Inactivity
+// ---------------------------------------------------------------------------
+//
+// If the user's AI session goes idle (no tool calls for IDLE_TIMEOUT_MS)
+// and no explicit save was made, we auto-save a low-quality context entry.
+// This is a safety net — better than losing context entirely.
+
+let idleCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+async function autoSaveOnIdle(): Promise<void> {
+    // Only fire if: we had tool calls, enough time passed, no explicit save
+    if (toolCallCount === 0 || explicitSaveMade) return;
+    if (lastToolCallTime === 0) return;
+
+    const idleMs = Date.now() - lastToolCallTime;
+    if (idleMs < IDLE_TIMEOUT_MS) return;
+
+    try {
+        if (!(await isInitialized())) return;
+
+        const [branch, repo, filesChanged, filesStaged, recentCommits, author] = await Promise.all([
+            getCurrentBranch(),
+            getRepoName(),
+            getChangedFiles(),
+            getStagedFiles(),
+            getRecentCommits(),
+            getAuthor(),
+        ]);
+
+        const entry: ContextEntry = {
+            id: uuid(),
+            timestamp: new Date().toISOString(),
+            branch,
+            repo,
+            author,
+            task: `[auto-idle] Session idle after ${toolCallCount} tool calls`,
+            approaches: [],
+            decisions: [],
+            currentState: "Session went idle — auto-saved by MCP server",
+            nextSteps: [],
+            filesChanged,
+            filesStaged,
+            recentCommits,
+        };
+
+        await saveContext(entry);
+
+        // Inject into rule files so next session auto-resumes
+        try {
+            const root = await getRepoRoot();
+            const entries = await loadBranchContext(branch);
+            const prompt = generatePrompt(entries);
+            await injectContextIntoRules(root, prompt);
+        } catch {
+            // Non-fatal
+        }
+
+        // Prevent repeated idle saves
+        explicitSaveMade = true;
+    } catch {
+        // Swallow — idle save is best-effort
+    }
+}
+
+function startIdleTimer(): void {
+    idleCheckTimer = setInterval(() => {
+        autoSaveOnIdle().catch(() => {});
+    }, IDLE_CHECK_INTERVAL_MS);
+    // Don't let the timer keep the process alive
+    if (idleCheckTimer && typeof idleCheckTimer === "object" && "unref" in idleCheckTimer) {
+        idleCheckTimer.unref();
+    }
+}
+
+function stopIdleTimer(): void {
+    if (idleCheckTimer) {
+        clearInterval(idleCheckTimer);
+        idleCheckTimer = null;
     }
 }
 
@@ -226,6 +308,7 @@ server.tool(
     "View context history for the current branch or all branches",
     logSchema as any,
     async ({ all, count }: LogArgs) => {
+        recordToolCall();
         // Auto-resume prefix for first tool call
         const prefix = await getAutoResumePrefix(false);
 
@@ -301,7 +384,30 @@ server.resource(
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
+    startIdleTimer();
 }
+
+// ---------------------------------------------------------------------------
+// Graceful Shutdown — save on exit if needed
+// ---------------------------------------------------------------------------
+
+async function gracefulShutdown(): Promise<void> {
+    stopIdleTimer();
+    // If we had activity but no explicit save, do a final idle save
+    if (toolCallCount > 0 && !explicitSaveMade) {
+        await autoSaveOnIdle().catch(() => {});
+    }
+}
+
+process.on("SIGTERM", async () => {
+    await gracefulShutdown();
+    process.exit(0);
+});
+
+process.on("SIGINT", async () => {
+    await gracefulShutdown();
+    process.exit(0);
+});
 
 main().catch((err) => {
     console.error("MCP server error:", err);

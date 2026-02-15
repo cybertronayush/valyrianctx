@@ -85,7 +85,7 @@ valyrianctx resume
 | `valyrianctx handoff @user` | Send a raven with full battle context to a bannerman |
 | `valyrianctx share` | Commit `.valyrianctx/` to git -- share the memory across the realm |
 | `valyrianctx watch` | The Night's Watch -- auto-forge context when files change |
-| `valyrianctx hook install` | Plant wildfire traps -- auto-capture on every git commit |
+| `valyrianctx hook install` | Plant wildfire traps -- auto-capture on commit + inject on checkout |
 
 ### Dragon Magic (AI-Powered -- Experimental)
 **Requires a dragon (LLM Provider).** Bind one via `VALYRIANCTX_AI_KEY` env var or `valyrianctx config set aiApiKey <key>`. Defaults to OpenAI-compatible endpoints. Works with OpenAI, Ollama, LM Studio, Together.ai, and any OpenAI-compatible API.
@@ -111,6 +111,55 @@ valyrianctx resume
 |---------|-------|
 | `valyrianctx config set <key> <val>` | Set realm preferences (`aiProvider`, `watchInterval`, etc.) |
 | `valyrianctx config list` | Survey all configuration across the realm |
+
+---
+
+## Living Context -- Zero-Effort Auto-Resume
+
+The biggest innovation in ValyrianCtx: **you never have to tell your AI to resume context. It just knows.**
+
+### The Problem with Rule Files
+
+Every AI IDE reads instruction files (`CLAUDE.md`, `GEMINI.md`, etc.), but they treat them as **passive reference** -- not startup triggers. Writing "run `valyrianctx resume` on start" in a rule file doesn't work reliably. The AI reads the instruction but doesn't proactively execute it.
+
+### The Breakthrough
+
+**Don't tell the AI to fetch context -- put the context where the AI already looks.**
+
+After every `valyrianctx save`, the actual context (task, decisions, state, next steps) is written directly into the IDE rule files the AI already reads on session start. No cooperation needed.
+
+```
+valyrianctx save "Refactoring payment service"
+# -> Saves to .valyrianctx/
+# -> Injects context into .cursor/rules/valyrianctx.mdc
+# -> Injects context into .gemini/valyrianctx.md
+# -> Injects context into .trae/rules/valyrianctx.md
+# -> Injects context into .warp/valyrianctx.md
+# -> Next session: AI reads the file and sees your context immediately
+```
+
+### How It Works
+
+- **Committed files** (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) contain only instructions -- no context injection, no git churn.
+- **Gitignored files** (`.cursor/rules/`, `.gemini/`, `.trae/rules/`, `.warp/`) get context injected via `<!-- valyrianctx:context:start -->` / `<!-- valyrianctx:context:end -->` markers.
+- **MCP-capable IDEs** (Claude Code, Cursor) use the MCP server's auto-resume engine -- context is prepended to the first tool call response.
+- **Git hooks** auto-inject on `post-commit` (save + inject) and `post-checkout` (inject correct branch's context on switch).
+
+### Three Layers of Auto-Resume
+
+| Layer | Mechanism | IDEs |
+|---|---|---|
+| **Living Context** | Context injected into rule files AI reads on start | Cursor, Antigravity, Trae, Warp |
+| **MCP Auto-Resume** | Server prepends context to first tool call | Claude Code, Cursor |
+| **Git Hook Injection** | Post-checkout injects branch-correct context | All IDEs |
+
+### Idle Safety Net
+
+Both the MCP server and VS Code extension include idle timers. If a session goes quiet without an explicit save:
+- **MCP server**: Auto-saves after 5 minutes of inactivity, gracefully saves on SIGTERM/SIGINT
+- **VS Code extension**: Auto-saves after 10 minutes of inactivity, auto-saves on deactivate (VS Code close), and on terminal close
+
+These are low-quality safety saves -- better than losing context entirely.
 
 ---
 
@@ -263,6 +312,10 @@ ValyrianCtx exposes a **Model Context Protocol** server so AI agents can nativel
 **Exposed tools:** `valyrianctx_save`, `valyrianctx_resume`, `valyrianctx_log`
 **Exposed resource:** `valyrianctx://context`
 
+**Auto-resume:** The MCP server automatically prepends resumed context to the first tool call of each session. The AI gets previous session context transparently -- no explicit resume call needed.
+
+**Idle safety net:** If 5 minutes pass with no tool calls and no explicit save was made, the server auto-saves a low-quality context entry. On SIGTERM/SIGINT (IDE shutdown), it performs a final save if needed.
+
 The MCP server is auto-configured for compatible IDEs during `valyrianctx init`. To configure it manually for any MCP-compatible client:
 
 ```json
@@ -277,6 +330,13 @@ The MCP server is auto-configured for compatible IDEs during `valyrianctx init`.
 
 ### The Maester's Lens (VS Code Extension)
 Auto-resumes context when you open the project -- like walking through the gates and having your steward brief you instantly. Works with VS Code and VS Code-based editors (Cursor, potentially Trae).
+
+**Lifecycle intelligence:**
+- **Auto-resume** on workspace open
+- **Auto-save on deactivate** -- saves when VS Code closes
+- **Idle timer** -- auto-saves after 10 minutes of inactivity
+- **File save tracking** -- resets idle timer on every file save
+- **Terminal close detection** -- auto-saves when a terminal closes (signals end of a dev/test session)
 
 *Build from source:* `cd vscode-extension && npm install && npm run package`
 
@@ -399,7 +459,7 @@ The `resume` command reads the branch context, formats it into a structured mark
 | `recentCommitCount` | `5` | Number of recent commits to capture |
 | `defaultLogCount` | `10` | Default entries shown by `log` |
 | `watchInterval` | `5` | Auto-save interval in minutes (watch mode) |
-| `autoHook` | `false` | Auto-install git hook on `init` |
+| `autoHook` | `true` | Auto-install git hooks on `init` (post-commit + post-checkout) |
 | `aiProvider` | `"https://api.openai.com/v1"` | LLM API base URL (OpenAI-compatible) |
 | `aiModel` | `"gpt-4o-mini"` | Model name for AI commands |
 | `aiApiKey` | -- | API key (prefer `VALYRIANCTX_AI_KEY` env var) |
@@ -424,7 +484,7 @@ The realm is open. Pull requests, issues, and raven scrolls are welcome.
 
 ```bash
 # Clone the forge
-git clone https://github.com/valyrianctx/valyrianctx.git
+git clone https://github.com/cybertronayush/valyrianctx.git
 
 # Enter the smithy
 cd valyrianctx

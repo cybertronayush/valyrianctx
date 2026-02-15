@@ -7,6 +7,54 @@ const execAsync = promisify(exec);
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
+// ---------------------------------------------------------------------------
+// Activity Tracking — Idle Timer + Debounced Save
+// ---------------------------------------------------------------------------
+
+let lastActivityTime = 0;
+let idleTimer: ReturnType<typeof setInterval> | null = null;
+let idleSaveFired = false;
+
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const IDLE_CHECK_INTERVAL_MS = 60 * 1000; // check every 60 seconds
+
+function recordActivity(): void {
+    lastActivityTime = Date.now();
+    idleSaveFired = false; // Reset on new activity
+}
+
+async function checkIdleAndSave(): Promise<void> {
+    if (lastActivityTime === 0 || idleSaveFired) return;
+
+    const idleMs = Date.now() - lastActivityTime;
+    if (idleMs < IDLE_TIMEOUT_MS) return;
+
+    idleSaveFired = true;
+    try {
+        await runValyrianCtx('save --auto "Session idle in VS Code"');
+        outputChannel.appendLine(`[ValyrianCtx] Auto-saved on idle (${Math.round(idleMs / 60000)}m inactive)`);
+    } catch {
+        // Best-effort
+    }
+}
+
+function startIdleTimer(): void {
+    idleTimer = setInterval(() => {
+        checkIdleAndSave().catch(() => {});
+    }, IDLE_CHECK_INTERVAL_MS);
+}
+
+function stopIdleTimer(): void {
+    if (idleTimer) {
+        clearInterval(idleTimer);
+        idleTimer = null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Activation
+// ---------------------------------------------------------------------------
+
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("Valyrian Context");
 
@@ -27,17 +75,78 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("valyrianctx.diff", showDiff)
     );
 
+    // 3c: Track file saves as activity (debounced via recordActivity)
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(() => {
+            recordActivity();
+        })
+    );
+
+    // 3d: Terminal close detection — auto-save when a terminal closes
+    // (often signals end of a dev session / test run)
+    context.subscriptions.push(
+        vscode.window.onDidCloseTerminal(async () => {
+            try {
+                await runValyrianCtx('save --auto "Terminal closed in VS Code"');
+                outputChannel.appendLine("[ValyrianCtx] Auto-saved on terminal close");
+                updateStatusBar();
+            } catch {
+                // Best-effort
+            }
+        })
+    );
+
     // Auto-resume on workspace open
     autoResume();
 
     // Update status bar
     updateStatusBar();
+
+    // Start idle timer
+    recordActivity();
+    startIdleTimer();
 }
 
-export function deactivate() {
+// ---------------------------------------------------------------------------
+// Deactivation — 3a: Auto-save when VS Code closes
+// ---------------------------------------------------------------------------
+
+export function deactivate(): Thenable<void> | undefined {
+    stopIdleTimer();
+
+    // Attempt a quick auto-save before shutdown.
+    // VS Code gives deactivate() a limited window, so we use execSync-style
+    // approach via a short-timeout async exec.
+    try {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (workspaceFolder) {
+            // Return a thenable so VS Code waits for it (up to its timeout)
+            return execAsync('npx valyrianctx save --auto "VS Code session ending"', {
+                cwd: workspaceFolder,
+                timeout: 5000, // 5s max — VS Code may kill us sooner
+            }).then(
+                () => {
+                    statusBarItem?.dispose();
+                    outputChannel?.dispose();
+                },
+                () => {
+                    statusBarItem?.dispose();
+                    outputChannel?.dispose();
+                }
+            );
+        }
+    } catch {
+        // Best-effort
+    }
+
     statusBarItem?.dispose();
     outputChannel?.dispose();
+    return undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Core Helpers
+// ---------------------------------------------------------------------------
 
 async function runValyrianCtx(
     args: string,
@@ -65,6 +174,10 @@ async function autoResume() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
 async function saveContext() {
     const message = await vscode.window.showInputBox({
         prompt: "What were you working on?",
@@ -75,7 +188,9 @@ async function saveContext() {
 
     try {
         await runValyrianCtx(`save "${message.replace(/"/g, '\\"')}"`);
-        vscode.window.showInformationMessage(`Valyrian Context: Context saved ✓`);
+        vscode.window.showInformationMessage(`Valyrian Context: Context saved`);
+        recordActivity(); // Explicit save resets idle
+        idleSaveFired = true; // Don't idle-save right after explicit save
         updateStatusBar();
     } catch (err: any) {
         vscode.window.showErrorMessage(`Valyrian Context: ${err.message}`);
