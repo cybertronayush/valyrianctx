@@ -1,8 +1,13 @@
 # ValyrianCtx
 
+[![CI](https://github.com/cybertronayush/valyrianctx/actions/workflows/ci.yml/badge.svg)](https://github.com/cybertronayush/valyrianctx/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/valyrianctx.svg)](https://www.npmjs.com/package/valyrianctx)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/node/v/valyrianctx.svg)](https://nodejs.org)
+
 > *"The Citadel (Git) tracks the history of the realm. ValyrianCtx tracks the memory of your intent."*
 
-**The immortal memory forge for AI-assisted coding.** Like Valyrian steel, once forged -- it never dulls, never breaks, and never forgets.
+**Persistent AI coding context for teams.** Captures intent, decisions, and progress across sessions -- works with Claude Code, Cursor, Antigravity, OpenCode, Trae, and Warp.
 
 ---
 

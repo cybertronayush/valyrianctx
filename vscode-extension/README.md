@@ -1,5 +1,7 @@
 # Valyrian Context for VS Code
 
+> *"The Citadel (Git) tracks the history of the realm. ValyrianCtx tracks the memory of your intent."*
+
 Valyrian Context is a CLI tool and VS Code extension for persistent AI coding context. It helps you maintain context across sessions, tools, and team members.
 
 ## Features
