@@ -29,7 +29,7 @@ const DEFAULT_CONFIG: UserConfig = {
     recentCommitCount: 5,
     defaultLogCount: 10,
     watchInterval: 5,
-    autoHook: false,
+    autoHook: true,
     aiProvider: "https://api.openai.com/v1",
     aiModel: "gpt-4o-mini",
 };

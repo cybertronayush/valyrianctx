@@ -25,3 +25,11 @@ yarn-error.log*
 
 # Valyrian Context
 .valyrianctx/
+
+# ValyrianCtx IDE rules (local, not shared)
+.claude/settings.local.json
+.cursor/rules/valyrianctx.mdc
+.cursor/mcp.json
+.gemini/valyrianctx.md
+.trae/rules/valyrianctx.md
+.warp/valyrianctx.md

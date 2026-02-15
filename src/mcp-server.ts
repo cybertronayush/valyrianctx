@@ -48,6 +48,18 @@ const server = new McpServer({
 // so we only prepend it to the FIRST tool call response.
 
 let sessionResumed = false;
+let toolCallCount = 0;
+let lastToolCallTime = 0;
+let explicitSaveMade = false;
+
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const IDLE_CHECK_INTERVAL_MS = 60 * 1000; // check every 60 seconds
+
+/** Track tool activity for idle detection */
+function recordToolCall() {
+    toolCallCount++;
+    lastToolCallTime = Date.now();
+}
 
 /**
  * Get auto-resume context prefix for the first tool call of a session.
@@ -100,6 +112,7 @@ server.tool(
     "Generate AI-ready context prompt for the current or specified branch",
     resumeSchema as any,
     async ({ branch }: ResumeArgs) => {
+        recordToolCall();
         // Mark session as resumed (this IS the resume call)
         sessionResumed = true;
 
@@ -144,6 +157,8 @@ server.tool(
     "Save current coding context with a message",
     saveSchema as any,
     async ({ message, goal, approaches, decisions, currentState, nextSteps }: SaveArgs) => {
+        recordToolCall();
+        explicitSaveMade = true;
         // Auto-resume prefix for first tool call
         const prefix = await getAutoResumePrefix(false);
 

@@ -5,6 +5,7 @@ import { getRepoRoot, getRepoName } from "../core/git";
 import { ValyrianCtxConfig } from "../core/types";
 import { writeIDERules, listIDERules } from "../core/agent-rules";
 import { hookCommand } from "./hook";
+import { loadConfig } from "../utils/config";
 
 export async function initCommand() {
   try {
@@ -83,19 +84,24 @@ export async function initCommand() {
     console.log("");
     console.log(chalk.gray("Supported IDEs: Claude Code, Cursor, Antigravity, OpenCode, Trae, Warp"));
 
-    // Auto-install git hooks for fully automatic context management:
+    // Auto-install git hooks (respects config.autoHook, default: true)
     // - post-commit: auto-save + inject context into rule files
     // - post-checkout: inject correct branch context on switch
-    const hooksDir = path.join(root, ".git", "hooks");
-    const postCommitPath = path.join(hooksDir, "post-commit");
-    const postCheckoutPath = path.join(hooksDir, "post-checkout");
-    const hasPostCommit = fs.existsSync(postCommitPath) && fs.readFileSync(postCommitPath, "utf-8").includes("valyrianctx");
-    const hasPostCheckout = fs.existsSync(postCheckoutPath) && fs.readFileSync(postCheckoutPath, "utf-8").includes("valyrianctx");
+    const config = await loadConfig();
+    if (config.autoHook) {
+      const hooksDir = path.join(root, ".git", "hooks");
+      const postCommitPath = path.join(hooksDir, "post-commit");
+      const postCheckoutPath = path.join(hooksDir, "post-checkout");
+      const hasPostCommit = fs.existsSync(postCommitPath) && fs.readFileSync(postCommitPath, "utf-8").includes("valyrianctx:hook:start");
+      const hasPostCheckout = fs.existsSync(postCheckoutPath) && fs.readFileSync(postCheckoutPath, "utf-8").includes("valyrianctx:hook:start");
 
-    if (!hasPostCommit || !hasPostCheckout) {
-      console.log("");
-      console.log(chalk.blue("Installing git hooks..."));
-      await hookCommand("install");
+      if (!hasPostCommit || !hasPostCheckout) {
+        console.log("");
+        console.log(chalk.blue("Installing git hooks..."));
+        await hookCommand("install");
+      }
+    } else {
+      console.log(chalk.gray("  Git hooks skipped (autoHook=false). Run `valyrianctx hook install` to enable."));
     }
 
     if (!alreadyInitialized) {

@@ -56,6 +56,20 @@ export async function saveCommand(message?: string, options?: SaveOptions) {
       options?.approaches || options?.decisions || options?.state || options?.nextSteps;
 
     if (options?.auto) {
+      // Guard: skip auto-save if a rich structured save was made recently (within 5 min).
+      // This prevents the post-commit hook from overwriting a high-quality manual save
+      // with a lower-quality auto-extracted one — since generatePrompt() uses the latest entry.
+      const existing = await loadBranchContext(branch);
+      if (existing.length > 0) {
+        const latest = existing[existing.length - 1];
+        const ageMs = Date.now() - new Date(latest.timestamp).getTime();
+        const isRichSave = latest.approaches.length > 0 || latest.decisions.length > 0;
+        if (isRichSave && ageMs < 5 * 60 * 1000) {
+          console.log(chalk.gray("  Recent structured save found, skipping auto-save."));
+          return;
+        }
+      }
+
       // Auto-extract mode — read from editor session data
       console.log(chalk.gray("  Scanning editor sessions for context..."));
       const cwd = process.cwd();
