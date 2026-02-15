@@ -25,6 +25,9 @@ export async function extractFromEditorSessions(
         extractFromClaudeCode,
         extractFromAntigravity,
         extractFromCursor,
+        extractFromOpenCode,
+        extractFromTrae,
+        extractFromWarp,
     ];
 
     for (const extractor of extractors) {
@@ -427,40 +430,576 @@ async function extractFromAntigravity(
 }
 
 // -------------------------------------------------------------------
-// Cursor: ~/.cursor/ (basic search)
+// Cursor: ~/.cursor/ - Multiple data sources
 // -------------------------------------------------------------------
 async function extractFromCursor(
-    _repoPath: string
+    repoPath: string
 ): Promise<ExtractedContext | null> {
     const home = os.homedir();
     const cursorDir = path.join(home, ".cursor");
 
     if (!fs.existsSync(cursorDir)) return null;
 
-    // Cursor stores workspace state in various places
-    const workspaceStorage = path.join(cursorDir, "User", "workspaceStorage");
-    if (!fs.existsSync(workspaceStorage)) return null;
+    // Try multiple data sources in priority order
 
-    // Look for recent conversation state files
-    const workspaces = fs
-        .readdirSync(workspaceStorage)
-        .map((d) => ({
-            name: d,
-            path: path.join(workspaceStorage, d),
-            mtime: fs.statSync(path.join(workspaceStorage, d)).mtime.getTime(),
-        }))
-        .sort((a, b) => b.mtime - a.mtime)
-        .slice(0, 3);
-
-    for (const ws of workspaces) {
-        // Look for AI chat state
-        const chatDb = path.join(ws.path, "state.vscdb");
-        if (fs.existsSync(chatDb)) {
-            // SQLite — would need sqlite3 dependency, skip for now
-            return null;
+    // 1. Check for .cursor/rules/*.mdc files in the repo (may contain project context)
+    const repoRulesDir = path.join(repoPath, ".cursor", "rules");
+    if (fs.existsSync(repoRulesDir)) {
+        const mdcFiles = fs.readdirSync(repoRulesDir).filter(f => f.endsWith(".mdc") || f.endsWith(".md"));
+        for (const file of mdcFiles) {
+            if (file === "valyrianctx.mdc") continue; // Skip our own rules
+            const content = fs.readFileSync(path.join(repoRulesDir, file), "utf-8");
+            const result = parseCursorRuleFile(content);
+            if (result && result.task) return result;
         }
     }
 
+    // 2. Check for Cursor's composer history (JSON format in newer versions)
+    const composerDir = path.join(cursorDir, "User", "globalStorage", "cursor.composer");
+    if (fs.existsSync(composerDir)) {
+        const result = await parseCursorComposer(composerDir);
+        if (result && result.task) return result;
+    }
+
+    // 3. Look for workspace storage JSON files (non-SQLite)
+    const workspaceStorage = path.join(cursorDir, "User", "workspaceStorage");
+    if (fs.existsSync(workspaceStorage)) {
+        const workspaces = fs
+            .readdirSync(workspaceStorage)
+            .map((d) => {
+                const dir = path.join(workspaceStorage, d);
+                try {
+                    return {
+                        name: d,
+                        path: dir,
+                        mtime: fs.statSync(dir).mtime.getTime(),
+                    };
+                } catch {
+                    return null;
+                }
+            })
+            .filter((d): d is NonNullable<typeof d> => d !== null)
+            .sort((a, b) => b.mtime - a.mtime)
+            .slice(0, 5);
+
+        for (const ws of workspaces) {
+            // Look for JSON-based state files
+            const jsonFiles = ["workspace.json", "chat.json", "conversations.json"];
+            for (const jsonFile of jsonFiles) {
+                const jsonPath = path.join(ws.path, jsonFile);
+                if (fs.existsSync(jsonPath)) {
+                    try {
+                        const data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+                        const result = parseCursorWorkspaceJson(data);
+                        if (result && result.task) return result;
+                    } catch {
+                        // Continue to next file
+                    }
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+function parseCursorRuleFile(content: string): ExtractedContext | null {
+    // Parse Cursor .mdc file format
+    // These files have YAML frontmatter and markdown content
+    const decisions: string[] = [];
+    const approaches: string[] = [];
+    let task = "";
+
+    // Extract description from frontmatter
+    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (frontmatterMatch) {
+        const descMatch = frontmatterMatch[1].match(/description:\s*(.+)/);
+        if (descMatch) {
+            task = descMatch[1].trim();
+        }
+    }
+
+    // Extract bullet points as decisions/approaches
+    const bullets = content.matchAll(/^[-*]\s+(.+)$/gm);
+    for (const match of bullets) {
+        const text = match[1].trim();
+        if (text.length > 20) {
+            if (text.match(/\b(use|using|prefer|always|never|must|should)\b/i)) {
+                decisions.push(text);
+            } else {
+                approaches.push(text);
+            }
+        }
+    }
+
+    if (!task && decisions.length === 0) return null;
+
+    return {
+        task: task || "Cursor project rules",
+        approaches: approaches.slice(0, 5),
+        decisions: decisions.slice(0, 10),
+        currentState: "Loaded from Cursor rule files",
+        nextSteps: [],
+        blockers: [],
+        source: "cursor-rules",
+    };
+}
+
+async function parseCursorComposer(composerDir: string): Promise<ExtractedContext | null> {
+    // Look for conversation files
+    const files = fs.readdirSync(composerDir)
+        .filter(f => f.endsWith(".json"))
+        .map(f => ({
+            name: f,
+            path: path.join(composerDir, f),
+            mtime: fs.statSync(path.join(composerDir, f)).mtime.getTime(),
+        }))
+        .sort((a, b) => b.mtime - a.mtime);
+
+    if (files.length === 0) return null;
+
+    for (const file of files.slice(0, 3)) {
+        try {
+            const data = JSON.parse(fs.readFileSync(file.path, "utf-8"));
+            if (data.messages || data.conversations || data.history) {
+                const messages = data.messages || data.conversations || data.history;
+                if (Array.isArray(messages) && messages.length > 0) {
+                    return parseConversationMessages(messages, "cursor-composer");
+                }
+            }
+        } catch {
+            // Continue
+        }
+    }
+
+    return null;
+}
+
+function parseCursorWorkspaceJson(data: any): ExtractedContext | null {
+    // Handle various Cursor JSON formats
+    if (data.chat?.messages) {
+        return parseConversationMessages(data.chat.messages, "cursor-workspace");
+    }
+    if (data.conversations) {
+        const latest = Array.isArray(data.conversations)
+            ? data.conversations[data.conversations.length - 1]
+            : data.conversations;
+        if (latest?.messages) {
+            return parseConversationMessages(latest.messages, "cursor-workspace");
+        }
+    }
+    return null;
+}
+
+function parseConversationMessages(messages: any[], source: string): ExtractedContext | null {
+    const userMessages: string[] = [];
+    const assistantMessages: string[] = [];
+
+    for (const msg of messages) {
+        const role = msg.role || msg.type || msg.sender;
+        const content = msg.content || msg.text || msg.message || "";
+        
+        if (typeof content !== "string" || content.length < 5) continue;
+
+        if (role === "user" || role === "human") {
+            userMessages.push(content);
+        } else if (role === "assistant" || role === "ai" || role === "bot") {
+            assistantMessages.push(content);
+        }
+    }
+
+    if (userMessages.length === 0) return null;
+
+    const task = userMessages[0].split("\n")[0].trim().slice(0, 200);
+    const decisions = extractDecisions(assistantMessages);
+    const approaches = extractApproaches(assistantMessages);
+    const currentState = extractState(assistantMessages);
+    const nextSteps = extractNextSteps(assistantMessages);
+
+    return {
+        task,
+        approaches: [
+            ...userMessages.slice(1, 4).map(m => `User also asked: ${m.split("\n")[0].slice(0, 100)}`),
+            ...approaches,
+        ],
+        decisions,
+        currentState: currentState || `Loaded from ${source}`,
+        nextSteps,
+        blockers: [],
+        source,
+    };
+}
+
+// -------------------------------------------------------------------
+// OpenCode: ~/.opencode/
+// -------------------------------------------------------------------
+async function extractFromOpenCode(
+    repoPath: string
+): Promise<ExtractedContext | null> {
+    const home = os.homedir();
+    
+    // OpenCode stores data in multiple possible locations
+    const possibleDirs = [
+        path.join(home, ".opencode"),
+        path.join(home, ".config", "opencode"),
+        path.join(repoPath, ".opencode"),
+    ];
+
+    for (const openCodeDir of possibleDirs) {
+        if (!fs.existsSync(openCodeDir)) continue;
+
+        // Look for session/conversation files
+        const sessionDirs = ["sessions", "conversations", "history"];
+        for (const sessionDir of sessionDirs) {
+            const sessionsPath = path.join(openCodeDir, sessionDir);
+            if (!fs.existsSync(sessionsPath)) continue;
+
+            const files = fs.readdirSync(sessionsPath)
+                .filter(f => f.endsWith(".json") || f.endsWith(".jsonl"))
+                .map(f => {
+                    const filePath = path.join(sessionsPath, f);
+                    try {
+                        return {
+                            name: f,
+                            path: filePath,
+                            mtime: fs.statSync(filePath).mtime.getTime(),
+                        };
+                    } catch {
+                        return null;
+                    }
+                })
+                .filter((f): f is NonNullable<typeof f> => f !== null)
+                .sort((a, b) => b.mtime - a.mtime);
+
+            if (files.length === 0) continue;
+
+            // Parse the most recent file
+            const latest = files[0];
+            try {
+                if (latest.name.endsWith(".jsonl")) {
+                    const lines = await readLastLines(latest.path, 100);
+                    const messages: any[] = [];
+                    for (const line of lines) {
+                        try {
+                            messages.push(JSON.parse(line));
+                        } catch {}
+                    }
+                    if (messages.length > 0) {
+                        return parseConversationMessages(messages, "opencode");
+                    }
+                } else {
+                    const data = JSON.parse(fs.readFileSync(latest.path, "utf-8"));
+                    if (data.messages) {
+                        return parseConversationMessages(data.messages, "opencode");
+                    }
+                    if (Array.isArray(data)) {
+                        return parseConversationMessages(data, "opencode");
+                    }
+                }
+            } catch {
+                // Continue
+            }
+        }
+
+        // Look for project-specific context
+        const contextFile = path.join(openCodeDir, "context.json");
+        if (fs.existsSync(contextFile)) {
+            try {
+                const ctx = JSON.parse(fs.readFileSync(contextFile, "utf-8"));
+                if (ctx.task || ctx.goal || ctx.currentTask) {
+                    return {
+                        task: ctx.task || ctx.goal || ctx.currentTask || "OpenCode session",
+                        approaches: ctx.approaches || [],
+                        decisions: ctx.decisions || [],
+                        currentState: ctx.state || ctx.currentState || "Loaded from OpenCode",
+                        nextSteps: ctx.nextSteps || ctx.todos || [],
+                        blockers: ctx.blockers || [],
+                        source: "opencode-context",
+                    };
+                }
+            } catch {
+                // Continue
+            }
+        }
+    }
+
+    return null;
+}
+
+// -------------------------------------------------------------------
+// Trae: ~/.trae/
+// -------------------------------------------------------------------
+async function extractFromTrae(
+    repoPath: string
+): Promise<ExtractedContext | null> {
+    const home = os.homedir();
+    
+    const possibleDirs = [
+        path.join(home, ".trae"),
+        path.join(home, ".config", "trae"),
+        path.join(repoPath, ".trae"),
+    ];
+
+    for (const traeDir of possibleDirs) {
+        if (!fs.existsSync(traeDir)) continue;
+
+        // Look for conversation/session history
+        const historyPaths = [
+            path.join(traeDir, "history"),
+            path.join(traeDir, "sessions"),
+            path.join(traeDir, "conversations"),
+            path.join(traeDir, "User", "History"),
+        ];
+
+        for (const historyPath of historyPaths) {
+            if (!fs.existsSync(historyPath)) continue;
+
+            const files = fs.readdirSync(historyPath)
+                .filter(f => f.endsWith(".json") || f.endsWith(".jsonl"))
+                .map(f => {
+                    const filePath = path.join(historyPath, f);
+                    try {
+                        return {
+                            name: f,
+                            path: filePath,
+                            mtime: fs.statSync(filePath).mtime.getTime(),
+                        };
+                    } catch {
+                        return null;
+                    }
+                })
+                .filter((f): f is NonNullable<typeof f> => f !== null)
+                .sort((a, b) => b.mtime - a.mtime);
+
+            if (files.length === 0) continue;
+
+            const latest = files[0];
+            try {
+                if (latest.name.endsWith(".jsonl")) {
+                    const lines = await readLastLines(latest.path, 100);
+                    const messages: any[] = [];
+                    for (const line of lines) {
+                        try { messages.push(JSON.parse(line)); } catch {}
+                    }
+                    if (messages.length > 0) {
+                        return parseConversationMessages(messages, "trae");
+                    }
+                } else {
+                    const data = JSON.parse(fs.readFileSync(latest.path, "utf-8"));
+                    if (data.messages) {
+                        return parseConversationMessages(data.messages, "trae");
+                    }
+                    if (Array.isArray(data)) {
+                        return parseConversationMessages(data, "trae");
+                    }
+                }
+            } catch {
+                // Continue
+            }
+        }
+
+        // Check for Trae rules files (similar to Cursor)
+        const rulesDir = path.join(traeDir, "rules");
+        if (fs.existsSync(rulesDir)) {
+            const ruleFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith(".md"));
+            for (const file of ruleFiles) {
+                if (file === "valyrianctx.md") continue;
+                const content = fs.readFileSync(path.join(rulesDir, file), "utf-8");
+                const result = parseTraeRuleFile(content);
+                if (result && result.task) return result;
+            }
+        }
+    }
+
+    return null;
+}
+
+function parseTraeRuleFile(content: string): ExtractedContext | null {
+    const decisions: string[] = [];
+    const approaches: string[] = [];
+    let task = "";
+
+    // Extract from frontmatter
+    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (frontmatterMatch) {
+        const descMatch = frontmatterMatch[1].match(/description:\s*(.+)/);
+        if (descMatch) {
+            task = descMatch[1].trim();
+        }
+    }
+
+    // Extract heading as task if not found
+    if (!task) {
+        const headingMatch = content.match(/^#\s+(.+)$/m);
+        if (headingMatch) {
+            task = headingMatch[1].trim();
+        }
+    }
+
+    // Extract bullet points
+    const bullets = content.matchAll(/^[-*]\s+(.+)$/gm);
+    for (const match of bullets) {
+        const text = match[1].trim();
+        if (text.length > 15) {
+            if (text.match(/\b(use|using|prefer|always|never|must|should|decided|chose)\b/i)) {
+                decisions.push(text);
+            } else {
+                approaches.push(text);
+            }
+        }
+    }
+
+    if (!task && decisions.length === 0) return null;
+
+    return {
+        task: task || "Trae project rules",
+        approaches: approaches.slice(0, 5),
+        decisions: decisions.slice(0, 10),
+        currentState: "Loaded from Trae rule files",
+        nextSteps: [],
+        blockers: [],
+        source: "trae-rules",
+    };
+}
+
+// -------------------------------------------------------------------
+// Warp: ~/.warp/
+// -------------------------------------------------------------------
+async function extractFromWarp(
+    _repoPath: string
+): Promise<ExtractedContext | null> {
+    const home = os.homedir();
+    const warpDir = path.join(home, ".warp");
+
+    if (!fs.existsSync(warpDir)) return null;
+
+    // Warp AI conversations might be stored in various locations
+    const possiblePaths = [
+        path.join(warpDir, "ai_conversations"),
+        path.join(warpDir, "sessions"),
+        path.join(warpDir, "history"),
+        path.join(warpDir, "state"),
+    ];
+
+    for (const searchPath of possiblePaths) {
+        if (!fs.existsSync(searchPath)) continue;
+
+        // Check if it's a file or directory
+        const stat = fs.statSync(searchPath);
+        
+        if (stat.isFile()) {
+            const result = await parseWarpFile(searchPath);
+            if (result) return result;
+        } else if (stat.isDirectory()) {
+            const files = fs.readdirSync(searchPath)
+                .filter(f => f.endsWith(".json") || f.endsWith(".jsonl") || f.endsWith(".log"))
+                .map(f => {
+                    const filePath = path.join(searchPath, f);
+                    try {
+                        return {
+                            name: f,
+                            path: filePath,
+                            mtime: fs.statSync(filePath).mtime.getTime(),
+                        };
+                    } catch {
+                        return null;
+                    }
+                })
+                .filter((f): f is NonNullable<typeof f> => f !== null)
+                .sort((a, b) => b.mtime - a.mtime);
+
+            for (const file of files.slice(0, 5)) {
+                const result = await parseWarpFile(file.path);
+                if (result) return result;
+            }
+        }
+    }
+
+    // Check for Warp's launch config or settings that might contain context
+    const launchConfig = path.join(warpDir, "launch_configurations.yaml");
+    if (fs.existsSync(launchConfig)) {
+        // YAML parsing would require a dependency, so just look for obvious patterns
+        const content = fs.readFileSync(launchConfig, "utf-8");
+        const taskMatch = content.match(/name:\s*["']?([^"'\n]+)/);
+        if (taskMatch) {
+            return {
+                task: taskMatch[1].trim(),
+                approaches: [],
+                decisions: [],
+                currentState: "Loaded from Warp configuration",
+                nextSteps: [],
+                blockers: [],
+                source: "warp-config",
+            };
+        }
+    }
+
+    return null;
+}
+
+async function parseWarpFile(filePath: string): Promise<ExtractedContext | null> {
+    try {
+        const ext = path.extname(filePath);
+        
+        if (ext === ".jsonl") {
+            const lines = await readLastLines(filePath, 100);
+            const messages: any[] = [];
+            for (const line of lines) {
+                try { messages.push(JSON.parse(line)); } catch {}
+            }
+            if (messages.length > 0) {
+                return parseConversationMessages(messages, "warp");
+            }
+        } else if (ext === ".json") {
+            const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+            
+            // Handle various Warp JSON formats
+            if (data.ai_conversations || data.conversations) {
+                const convs = data.ai_conversations || data.conversations;
+                const latest = Array.isArray(convs) ? convs[convs.length - 1] : convs;
+                if (latest?.messages) {
+                    return parseConversationMessages(latest.messages, "warp");
+                }
+            }
+            if (data.messages) {
+                return parseConversationMessages(data.messages, "warp");
+            }
+            if (Array.isArray(data)) {
+                return parseConversationMessages(data, "warp");
+            }
+        } else if (ext === ".log") {
+            // Parse log file for AI interactions
+            const content = fs.readFileSync(filePath, "utf-8");
+            const userPrompts: string[] = [];
+            const aiResponses: string[] = [];
+            
+            // Look for common log patterns
+            const promptMatches = content.matchAll(/(?:user|prompt|query):\s*(.+?)(?=\n|$)/gi);
+            for (const match of promptMatches) {
+                userPrompts.push(match[1].trim());
+            }
+            
+            const responseMatches = content.matchAll(/(?:ai|assistant|response):\s*(.+?)(?=\n|$)/gi);
+            for (const match of responseMatches) {
+                aiResponses.push(match[1].trim());
+            }
+
+            if (userPrompts.length > 0) {
+                return {
+                    task: userPrompts[0].slice(0, 200),
+                    approaches: userPrompts.slice(1, 4).map(p => `Also asked: ${p.slice(0, 100)}`),
+                    decisions: extractDecisions(aiResponses),
+                    currentState: "Loaded from Warp logs",
+                    nextSteps: extractNextSteps(aiResponses),
+                    blockers: [],
+                    source: "warp-logs",
+                };
+            }
+        }
+    } catch {
+        // Continue
+    }
+    
     return null;
 }
 

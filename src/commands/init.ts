@@ -3,6 +3,7 @@ import path from "path";
 import chalk from "chalk";
 import { getRepoRoot, getRepoName } from "../core/git";
 import { ValyrianCtxConfig } from "../core/types";
+import { writeIDERules } from "../core/agent-rules";
 
 export async function initCommand() {
   try {
@@ -38,7 +39,38 @@ export async function initCommand() {
     }
 
     console.log(chalk.green(`✓ Initialized ValyrianCtx in ${root}`));
-    console.log(chalk.gray("  Run `valyrianctx save` to capture your first context."));
+
+    // Generate IDE rule files
+    console.log("");
+    console.log(chalk.blue("Setting up IDE integrations..."));
+    const written = await writeIDERules(root);
+
+    const teamShared = written.filter(w => 
+      ["CLAUDE.md", "GEMINI.md", "AGENTS.md"].some(f => w.path.includes(f))
+    );
+    const ideLocal = written.filter(w => 
+      !["CLAUDE.md", "GEMINI.md", "AGENTS.md"].some(f => w.path.includes(f))
+    );
+
+    if (teamShared.length > 0) {
+      console.log(chalk.gray("  Team-shared (commit these):"));
+      for (const f of teamShared) {
+        console.log(chalk.gray(`    ${f.action === "created" ? "+" : "~"} ${f.path}`));
+      }
+    }
+
+    if (ideLocal.length > 0) {
+      console.log(chalk.gray("  IDE-local (gitignored):"));
+      for (const f of ideLocal) {
+        console.log(chalk.gray(`    + ${f.path}`));
+      }
+    }
+
+    console.log("");
+    console.log(chalk.green(`✓ Configured ${written.length} IDE integration(s)`));
+    console.log("");
+    console.log(chalk.gray("Supported IDEs: Claude Code, Cursor, Antigravity, OpenCode, Trae, Warp"));
+    console.log(chalk.gray("Run `valyrianctx save` to capture your first context."));
   } catch (err: any) {
     if (err.message?.includes("not a git repository")) {
       console.log(chalk.red("✗ Not a git repository. Run `git init` first."));

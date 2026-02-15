@@ -13,6 +13,7 @@ import { summarizeCommand } from "./commands/summarize";
 import { suggestCommand } from "./commands/suggest";
 import { compressCommand } from "./commands/compress";
 import { configCommand } from "./commands/config-cmd";
+import { rulesCommand } from "./commands/rules";
 
 const program = new Command();
 
@@ -101,6 +102,13 @@ program
   .command("config [action] [key] [value]")
   .description("Manage Valyrian Context configuration (list/get/set)")
   .action(configCommand);
+
+program
+  .command("rules [action]")
+  .description("Manage IDE integration rules (generate/remove/list)")
+  .option("--ide <ids>", "Comma-separated IDE IDs to target")
+  .option("--no-mcp", "Skip MCP server configuration")
+  .action(rulesCommand);
 
 program.parse();
 
