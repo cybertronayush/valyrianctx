@@ -10,7 +10,7 @@
 
 You've been deep in a Cursor session, refactoring the payment service -- the Dragon Queen's treasury system. You've explained the architecture to your AI, tried three approaches, found the one true path. Then the session dies. The Long Night falls. Next morning -- or worse, your bannerman picks up the branch -- and the AI remembers **nothing**. You spend 15 minutes re-explaining everything. Every. Single. Time.
 
-This plague spreads across **every** AI tool in the Seven Kingdoms: Cursor, Claude Code, Copilot, Windsurf -- none of them carry memory across sessions, across forges, or across houses.
+This plague spreads across **every** AI tool in the Seven Kingdoms: Cursor, Claude Code, Antigravity, OpenCode, Trae, Warp -- none of them carry memory across sessions, across forges, or across houses.
 
 **The realm needed Valyrian steel. We forged it.**
 
@@ -41,6 +41,9 @@ npm install -g valyrianctx
 ```bash
 # 1. Plant the weirwood in your repo
 valyrianctx init
+# -> Sets up .valyrianctx/ directory
+# -> Generates rule files for all 6 IDEs (Claude Code, Cursor, Antigravity, OpenCode, Trae, Warp)
+# -> Configures MCP servers for compatible IDEs
 
 # 2. Code your battles... then forge the memory
 valyrianctx save
@@ -50,6 +53,8 @@ valyrianctx save
 valyrianctx resume
 # -> Copies a perfectly forged prompt to your clipboard
 # -> Paste into Cursor, Claude, ChatGPT -- your dragon remembers everything
+
+# Your AI agent now auto-saves and resumes context -- no manual prompting needed
 ```
 
 ---
@@ -86,6 +91,15 @@ valyrianctx resume
 | `valyrianctx suggest` | The Hand of the King advises your next strategic moves |
 | `valyrianctx compress` | Maester's art -- distill volumes of history into a single potent scroll |
 
+### The Forge Master (IDE Integration)
+
+| Command | Power |
+|---------|-------|
+| `valyrianctx rules generate` | Generate rule files for all supported IDEs |
+| `valyrianctx rules generate --ide cursor,claude-code` | Generate for specific IDEs only |
+| `valyrianctx rules remove` | Remove all ValyrianCtx rule files and sections |
+| `valyrianctx rules list` | Show which IDEs are configured and their MCP status |
+
 ### The Maester's Desk (Configuration)
 
 | Command | Power |
@@ -118,26 +132,146 @@ It works with **every** AI coding tool because it manages the *prompt* -- the un
 
 ## Alliances & Integrations
 
-### The Iron Throne Protocol (MCP Server)
-ValyrianCtx exposes a **Model Context Protocol** server so AI agents (Claude Code, Windsurf, and beyond) can natively read and write context -- no clipboard needed. Your dragon speaks directly to the weirwood.
+ValyrianCtx supports **6 AI coding IDEs** out of the box. When you run `valyrianctx init`, it automatically generates the correct rule files, MCP configurations, and integration hooks for every supported tool.
 
-**Add to your MCP config (the Throne Room):**
+```
+valyrianctx init
+# -> Creates .valyrianctx/ directory
+# -> Generates IDE rules for: Claude Code, Cursor, Antigravity, OpenCode, Trae, Warp
+# -> Configures MCP servers for IDEs that support it
+```
+
+| IDE | Agent Rules | MCP | Auto-Extract | Status |
+|---|---|---|---|---|
+| **Claude Code** | `CLAUDE.md` | `.claude/settings.local.json` | Session JSONL + memory | Full support |
+| **Cursor** | `.cursor/rules/valyrianctx.mdc` | `.cursor/mcp.json` | Composer + workspace JSON | Full support |
+| **Antigravity (Gemini)** | `GEMINI.md` | -- | task.md, plans, walkthroughs | Full support |
+| **OpenCode** | `AGENTS.md` | Via config | Session JSON/JSONL | Full support |
+| **Trae** | `.trae/rules/valyrianctx.md` | Emerging | Session history + rules | Full support |
+| **Warp** | `.warp/valyrianctx.md` | -- | AI conversation logs | Best-effort |
+
+**Team-shared files** (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) are committed to git so every team member benefits.
+**IDE-local files** (`.cursor/`, `.trae/`, `.warp/`, MCP configs) are gitignored -- each developer generates their own via `init`.
+
+---
+
+### Claude Code
+
+`valyrianctx init` creates two things:
+
+1. **`CLAUDE.md`** at project root -- Claude Code reads this automatically and learns to save/resume context.
+2. **`.claude/settings.local.json`** -- Registers the MCP server so Claude Code can call `valyrianctx_save` and `valyrianctx_resume` natively.
+
+You can also use slash commands in Claude Code:
+```
+/resume-context    # Load saved context and continue where you left off
+/save-context      # Extract and save context from the current conversation
+```
+
+Or use the MCP tools directly -- Claude Code will call them when it knows about valyrianctx through the CLAUDE.md rules.
+
+**Manual MCP setup** (if you skipped `init`):
 ```json
+// .claude/settings.local.json
 {
   "mcpServers": {
     "valyrianctx": {
-      "command": "npx",
-      "args": ["-y", "valyrianctx", "mcp"]
+      "command": "valyrianctx-mcp"
     }
   }
 }
 ```
 
+---
+
+### Cursor
+
+`valyrianctx init` creates:
+
+1. **`.cursor/rules/valyrianctx.mdc`** -- Cursor loads all `.mdc` files from this directory as agent rules.
+2. **`.cursor/mcp.json`** -- Registers the MCP server for native tool calls.
+
+The rule file is set to `alwaysApply: true`, so Cursor's AI agent will automatically save and resume context without any manual prompting.
+
+**Manual MCP setup:**
+```json
+// .cursor/mcp.json
+{
+  "mcpServers": {
+    "valyrianctx": {
+      "command": "npx",
+      "args": ["valyrianctx-mcp"]
+    }
+  }
+}
+```
+
+---
+
+### Antigravity (Gemini CLI)
+
+`valyrianctx init` creates **`GEMINI.md`** at project root. Gemini CLI reads this file automatically.
+
+Antigravity does not support MCP, so the integration works entirely through CLI commands. The rules instruct Gemini to:
+- Run `valyrianctx resume --stdout` at session start
+- Run `valyrianctx save` with structured flags before finishing
+
+ValyrianCtx also has **deep auto-extraction** for Antigravity -- it reads your `task.md`, `implementation_plan.md`, and `walkthrough.md` artifacts directly from `~/.gemini/antigravity/brain/`.
+
+---
+
+### OpenCode
+
+`valyrianctx init` creates **`AGENTS.md`** at project root. OpenCode reads this for project-level agent instructions.
+
+OpenCode supports MCP servers -- configure it in your OpenCode settings to enable native `valyrianctx_save` and `valyrianctx_resume` tool calls.
+
+---
+
+### Trae
+
+`valyrianctx init` creates **`.trae/rules/valyrianctx.md`**. Trae loads rule files from this directory.
+
+Trae's MCP support is emerging. The rules instruct Trae to use CLI commands as the primary integration path, with MCP as an optional enhancement when available.
+
+---
+
+### Warp
+
+`valyrianctx init` creates **`.warp/valyrianctx.md`** as a best-effort integration. Warp does not have a formal project-level rule loading mechanism, so this file serves as documentation.
+
+For Warp, the recommended workflow is:
+```bash
+# At the start of a session
+valyrianctx resume
+
+# Before ending a session
+valyrianctx save --auto
+```
+
+---
+
+### The Iron Throne Protocol (MCP Server)
+
+ValyrianCtx exposes a **Model Context Protocol** server so AI agents can natively read and write context -- no clipboard needed.
+
 **Exposed tools:** `valyrianctx_save`, `valyrianctx_resume`, `valyrianctx_log`
 **Exposed resource:** `valyrianctx://context`
 
+The MCP server is auto-configured for compatible IDEs during `valyrianctx init`. To configure it manually for any MCP-compatible client:
+
+```json
+{
+  "mcpServers": {
+    "valyrianctx": {
+      "command": "valyrianctx-mcp"
+    }
+  }
+}
+```
+
 ### The Maester's Lens (VS Code Extension)
-Auto-resumes context when you open the project -- like walking through the gates and having your steward brief you instantly.
+Auto-resumes context when you open the project -- like walking through the gates and having your steward brief you instantly. Works with VS Code and VS Code-based editors (Cursor, potentially Trae).
 
 *Build from source:* `cd vscode-extension && npm install && npm run package`
 
@@ -149,9 +283,14 @@ ValyrianCtx doesn't just store what you tell it. With `--auto` mode and `watch`,
 
 | Source | What It Reads |
 |---|---|
-| **Claude Code** | `~/.claude/projects/` -- parses JSONL sessions and memory files |
+| **Claude Code** | `~/.claude/projects/` -- parses JSONL sessions and MEMORY.md files |
 | **Antigravity (Gemini)** | `~/.gemini/antigravity/brain/` -- reads task.md, implementation plans, walkthroughs |
-| **Cursor** | `~/.cursor/` workspace storage (partial -- SQLite support coming) |
+| **Cursor** | `~/.cursor/` -- composer history, workspace JSON, and rule files |
+| **OpenCode** | `~/.opencode/` -- session JSON/JSONL files and project context |
+| **Trae** | `~/.trae/` -- session history and rule files |
+| **Warp** | `~/.warp/` -- AI conversation logs and session data |
+
+The extractors try each source in priority order and return the first successful match. Each extractor pulls out: **task**, **approaches** (including failed ones), **decisions**, **current state**, and **next steps**.
 
 ```bash
 # Let the Three-Eyed Raven extract context from your last editor session
@@ -264,7 +403,7 @@ The `resume` command reads the branch context, formats it into a structured mark
 
 ## The Philosophy
 
-Every AI coding tool -- Cursor, Claude Code, Copilot, Windsurf -- they are all dragons. Powerful. Brilliant. But they have the memory of a goldfish. They forget everything between sessions.
+Every AI coding tool -- Cursor, Claude Code, Antigravity, OpenCode, Trae, Warp -- they are all dragons. Powerful. Brilliant. But they have the memory of a goldfish. They forget everything between sessions.
 
 **ValyrianCtx is not another AI tool.** It is the memory layer that sits beneath all of them. It manages the one thing every LLM understands: **the prompt**. That's the universal interface. That's the common tongue.
 

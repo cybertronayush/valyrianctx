@@ -3,44 +3,55 @@ import path from "path";
 import chalk from "chalk";
 import { getRepoRoot, getRepoName } from "../core/git";
 import { ValyrianCtxConfig } from "../core/types";
-import { writeIDERules } from "../core/agent-rules";
+import { writeIDERules, listIDERules } from "../core/agent-rules";
 
 export async function initCommand() {
   try {
     const root = await getRepoRoot();
     const valyrianCtxDir = path.join(root, ".valyrianctx");
 
-    if (fs.existsSync(valyrianCtxDir)) {
-      console.log(chalk.yellow("⚠ ValyrianCtx already initialized in this repo."));
+    const alreadyInitialized = fs.existsSync(valyrianCtxDir);
+
+    if (!alreadyInitialized) {
+      // Create directory structure
+      fs.mkdirSync(path.join(valyrianCtxDir, "sessions"), { recursive: true });
+      fs.mkdirSync(path.join(valyrianCtxDir, "branches"), { recursive: true });
+
+      // Write config
+      const config: ValyrianCtxConfig = {
+        version: "0.1.0",
+        createdAt: new Date().toISOString(),
+        repo: await getRepoName(),
+      };
+      fs.writeFileSync(path.join(valyrianCtxDir, "config.json"), JSON.stringify(config, null, 2));
+
+      // Add to .gitignore
+      const gitignorePath = path.join(root, ".gitignore");
+      const gitignoreContent = fs.existsSync(gitignorePath)
+        ? fs.readFileSync(gitignorePath, "utf-8")
+        : "";
+
+      if (!gitignoreContent.includes(".valyrianctx/")) {
+        fs.appendFileSync(gitignorePath, "\n# ValyrianCtx - AI coding context\n.valyrianctx/\n");
+        console.log(chalk.gray("  Added .valyrianctx/ to .gitignore"));
+      }
+
+      console.log(chalk.green(`✓ Initialized ValyrianCtx in ${root}`));
+    } else {
+      console.log(chalk.green(`✓ ValyrianCtx already initialized in ${root}`));
+    }
+
+    // Always generate/update IDE rule files
+    // Check if any IDE rules are missing
+    const statuses = await listIDERules(root);
+    const missingCount = statuses.filter(s => !s.exists).length;
+
+    if (alreadyInitialized && missingCount === 0) {
+      console.log(chalk.gray("  All 6 IDE integrations already configured."));
+      console.log(chalk.gray("  Run `valyrianctx rules generate` to regenerate, or `valyrianctx rules list` to check status."));
       return;
     }
 
-    // Create directory structure
-    fs.mkdirSync(path.join(valyrianCtxDir, "sessions"), { recursive: true });
-    fs.mkdirSync(path.join(valyrianCtxDir, "branches"), { recursive: true });
-
-    // Write config
-    const config: ValyrianCtxConfig = {
-      version: "0.1.0",
-      createdAt: new Date().toISOString(),
-      repo: await getRepoName(),
-    };
-    fs.writeFileSync(path.join(valyrianCtxDir, "config.json"), JSON.stringify(config, null, 2));
-
-    // Add to .gitignore
-    const gitignorePath = path.join(root, ".gitignore");
-    const gitignoreContent = fs.existsSync(gitignorePath)
-      ? fs.readFileSync(gitignorePath, "utf-8")
-      : "";
-
-    if (!gitignoreContent.includes(".valyrianctx/")) {
-      fs.appendFileSync(gitignorePath, "\n# ValyrianCtx - AI coding context\n.valyrianctx/\n");
-      console.log(chalk.gray("  Added .valyrianctx/ to .gitignore"));
-    }
-
-    console.log(chalk.green(`✓ Initialized ValyrianCtx in ${root}`));
-
-    // Generate IDE rule files
     console.log("");
     console.log(chalk.blue("Setting up IDE integrations..."));
     const written = await writeIDERules(root);
@@ -70,7 +81,9 @@ export async function initCommand() {
     console.log(chalk.green(`✓ Configured ${written.length} IDE integration(s)`));
     console.log("");
     console.log(chalk.gray("Supported IDEs: Claude Code, Cursor, Antigravity, OpenCode, Trae, Warp"));
-    console.log(chalk.gray("Run `valyrianctx save` to capture your first context."));
+    if (!alreadyInitialized) {
+      console.log(chalk.gray("Run `valyrianctx save` to capture your first context."));
+    }
   } catch (err: any) {
     if (err.message?.includes("not a git repository")) {
       console.log(chalk.red("✗ Not a git repository. Run `git init` first."));
