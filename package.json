@@ -61,7 +61,7 @@
     "clipboardy": "^2.3.0",
     "commander": "^12.1.0",
     "inquirer": "^8.2.6",
-    "simple-git": "^3.27.0",
+    "simple-git": "^3.32.3",
     "uuid": "^10.0.0",
     "zod": "^3.23.0"
   },
